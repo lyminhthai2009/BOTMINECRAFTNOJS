@@ -1,140 +1,120 @@
 const mineflayer = require('mineflayer');
 const readline = require('readline');
 
-const botCount = 50;
-const host = 'smp114555-y1xo.aternos.me';
-const port = 32672;
-const version = '1.21.1';
-const prefix = '!';
+let botList = [];
+let joiningPaused = false;
+let namePrefixGlobal = "";
 
-const bots = [];
-let paused = false;
-let botIndex = 0;
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
 
-// Khởi tạo bot
-function createBot(index) {
-  if (index >= botCount || paused) return;
+// Hỏi thông tin
+rl.question('Nhập IP server (ví dụ: smp123.aternos.me): ', (ip) => {
+  rl.question('Nhập PORT server (ví dụ: 25565): ', (port) => {
+    rl.question('Nhập số lượng bot muốn chạy: ', (botCountInput) => {
+      rl.question('Nhập prefix tên bot (VD: BOT): ', (namePrefix) => {
+        const botCount = parseInt(botCountInput);
+        namePrefixGlobal = namePrefix;
+        startSpawningBots(ip, parseInt(port), botCount, namePrefix);
+        rl.prompt();
+      });
+    });
+  });
+});
 
+// Hàm tạo bot
+function createBot(username, host, port, isLogger) {
   const bot = mineflayer.createBot({
-    host,
-    port,
-    version,
-    username: `Bot${index + 1}`,
-    auth: 'offline',
+    host: host,
+    port: port,
+    username: username
   });
 
-  bot.ready = false;
-
-  bot.once('spawn', () => {
-    bot.ready = true;
-    console.log(`${bot.username} đã vào game.`);
+  bot.on('login', () => {
+    console.log(`[+] ${username} đã vào server`);
   });
 
-  bot.on('chat', (username, message) => {
-    if (!bot.ready || username === bot.username || !message.startsWith(prefix)) return;
-    handleCommand(message);
-  });
-
-  bot.on('kicked', reason => console.log(`${bot.username} bị kick: ${reason}`));
-  bot.on('error', err => console.log(`${bot.username} lỗi:`, err));
-
-  bots.push(bot);
-  botIndex++;
-
-  // Tạo bot tiếp theo sau 5s
-  if (!paused && botIndex < botCount) {
-    setTimeout(() => createBot(botIndex), 5000);
-  }
-}
-
-// Xử lý lệnh
-function handleCommand(message) {
-  if (!message.startsWith(prefix)) return;
-  const args = message.slice(prefix.length).trim().split(' ');
-  const cmd = args.shift();
-  const activeBots = bots.filter(b => b.ready);
-
-  switch (cmd) {
-    case 'say': {
-      const text = args.join(' ');
-      activeBots.forEach(b => b.chat(text));
-      break;
-    }
-
-    case 'jump':
-      activeBots.forEach(b => {
-        b.setControlState('jump', true);
-        setTimeout(() => b.setControlState('jump', false), 500);
-      });
-      break;
-
-    case 'move':
-      const dir = args[0];
-      activeBots.forEach(b => {
-        b.clearControlStates();
-        if (['forward', 'back', 'left', 'right'].includes(dir)) {
-          b.setControlState(dir, true);
-        }
-      });
-      break;
-
-    case 'stop':
-      activeBots.forEach(b => b.clearControlStates());
-      break;
-
-    case 'spam': {
-      const times = parseInt(args[0]);
-      const msg = args.slice(1).join(' ');
-      if (!times || !msg) return console.log('Cú pháp: !spam [số lần] [tin nhắn]');
-      activeBots.forEach((b, index) => {
-        for (let i = 0; i < times; i++) {
-          setTimeout(() => b.chat(msg), i * 500 + index * 100);
-        }
-      });
-      break;
-    }
-
-    case 'sb': {
-      paused = true;
-      console.log('⏸️ Tạm dừng tạo bot mới.');
-      break;
-    }
-
-    case 'rcn': {
-      if (paused) {
-        paused = false;
-        console.log('▶️ Tiếp tục tạo bot...');
-        createBot(botIndex);
-      } else {
-        console.log('⚠️ Bot đã chạy liên tục rồi.');
+  // Chỉ BOT1 log chat
+  if (isLogger) {
+    bot.on('chat', (username, message) => {
+      if (username !== bot.username) {
+        console.log(`<${username}> ${message}`);
       }
-      break;
+    });
+  }
+
+  // Các bot vẫn thực hiện lệnh
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
+
+    if (message.startsWith('!say ')) {
+      const sayMsg = message.slice(5);
+      botList.forEach(b => b.chat(sayMsg));
     }
 
-    default:
-      console.log(`❓ Không rõ lệnh: ${cmd}`);
+    if (message.startsWith('!spam ')) {
+      const [_, times, ...msg] = message.split(' ');
+      const text = msg.join(' ');
+      for (let i = 0; i < parseInt(times); i++) {
+        setTimeout(() => {
+          botList.forEach(b => b.chat(text));
+        }, i * 500);
+      }
+    }
+
+    if (message === '!sb') {
+      joiningPaused = true;
+      console.log('[!] Đã tạm dừng việc join bot.');
+    }
+
+    if (message === '!rcn') {
+      joiningPaused = false;
+      console.log('[!] Tiếp tục cho bot join.');
+    }
+  });
+
+  bot.on('end', () => {
+    console.log(`[!] ${username} đã rời khỏi server.`);
+  });
+
+  bot.on('error', err => {
+    console.log(`[!] Lỗi với ${username}: ${err.code || err}`);
+  });
+
+  return bot;
+}
+
+// Tạo bot cách nhau 5 giây
+async function startSpawningBots(host, port, total, namePrefix) {
+  for (let i = 1; i <= total; i++) {
+    while (joiningPaused) await delay(1000);
+    const botName = `${namePrefix}${i}`;
+    const isLogger = i === 1;
+    const bot = createBot(botName, host, port, isLogger);
+    botList.push(bot);
+    await delay(5000);
   }
 }
 
-// Giao diện dòng lệnh
-function startConsoleInput() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: '> '
-  });
-
-  rl.prompt();
-
-  rl.on('line', (line) => {
-    if (line.trim()) handleCommand(line.trim());
-    rl.prompt();
-  }).on('close', () => {
-    console.log('Thoát lệnh console.');
-    process.exit(0);
-  });
+// Delay
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Bắt đầu
-createBot(botIndex);
-startConsoleInput();
+// Nhận lệnh từ terminal
+rl.on('line', (input) => {
+  if (input.startsWith('!say ')) {
+    const msg = input.slice(5);
+    botList.forEach(bot => bot.chat(msg));
+  }
+  if (input === '!sb') {
+    joiningPaused = true;
+    console.log('[!] Tạm dừng join bot.');
+  }
+  if (input === '!rcn') {
+    joiningPaused = false;
+    console.log('[!] Tiếp tục join bot.');
+  }
+});
